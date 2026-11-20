@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="RWP座標">
+  <title>RWP 座標表示ビューア</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      padding: 16px;
+      background: #111827;
+      color: #f9fafb;
+    }
+    h1 {
+      font-size: 18px;
+      margin: 0 0 12px;
+      color: #38bdf8;
+    }
+    .card {
+      background: #1f2937;
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 14px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+    .label {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-bottom: 6px;
+    }
+    textarea {
+      width: 100%;
+      height: 76px;
+      border-radius: 8px;
+      border: 1px solid #374151;
+      background: #0f172a;
+      color: #34d399;
+      padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+    }
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    button {
+      flex: 1;
+      padding: 11px 10px;
+      border: none;
+      border-radius: 8px;
+      font-weight: bold;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    button:active {
+      opacity: 0.85;
+    }
+    .btn-parse {
+      background: #0284c7;
+      color: #ffffff;
+    }
+    .btn-test {
+      background: #059669;
+      color: #ffffff;
+    }
+    .btn-clear {
+      background: #374151;
+      color: #e5e7eb;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+    .item {
+      background: #0f172a;
+      padding: 11px 12px;
+      border-radius: 8px;
+    }
+    .val {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 15px;
+      font-weight: bold;
+      color: #f8fafc;
+      word-break: break-all;
+    }
+    .fix-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: bold;
+      background: #065f46;
+      color: #6ee7b7;
+    }
+    .err {
+      color: #f87171;
+      font-size: 13px;
+      margin-top: 8px;
+      min-height: 18px;
+    }
+  </style>
+</head>
+<body>
+  <h1>📍 RWP 座標表示ビューア</h1>
+
+  <div class="card">
+    <div class="label">$GPGGA / $GNGGA 行を貼り付け</div>
+    <textarea id="nmea-input" placeholder="$GPGGA,012345.00,3403.123456,N,13148.123456,E,4,12,0.8,15.400,M,35.200,M,,*xx"></textarea>
+    <div class="btn-row">
+      <button class="btn-parse" onclick="parseNmea()">座標を表示</button>
+      <button class="btn-test" onclick="fillDummyGga()">テスト受信</button>
+      <button class="btn-clear" onclick="clearInput()">クリア</button>
+    </div>
+    <div id="err-msg" class="err"></div>
+  </div>
+
+  <div class="card">
+    <div class="grid">
+      <div class="item">
+        <div class="label">測位品質（Fix Quality）</div>
+        <div class="val">
+          <span id="out-fix" class="fix-badge">-</span>
+          <span id="out-sats" style="font-size:12px; color:#9ca3af; margin-left:6px;"></span>
+        </div>
+      </div>
+      <div class="item">
+        <div class="label">緯度 / 経度（10進数）</div>
+        <div class="val" id="out-latlon">-</div>
+      </div>
+      <div class="item">
+        <div class="label">高さ（標高・海抜 m）</div>
+        <div class="val" id="out-alt">-</div>
+      </div>
+      <div class="item">
+        <div class="label">平面直角座標 第3系（X: 南北 / Y: 東西）</div>
+        <div class="val" id="out-zone3">-</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function nmeaToDeg(valStr, hemi) {
+      if (!valStr || !hemi) return NaN;
+      const num = parseFloat(valStr);
+      if (isNaN(num)) return NaN;
+      const deg = Math.floor(num / 100);
+      const min = num - deg * 100;
+      let res = deg + min / 60.0;
+      if (hemi === 'S' || hemi === 'W') res = -res;
+      return res;
+    }
+
+    function fixQualityText(q) {
+      const map = {
+        '0': '0: 無効 (Invalid)',
+        '1': '1: 単独測位 (GPS)',
+        '2': '2: DGPS',
+        '4': '4: RTK FIX',
+        '5': '5: RTK Float',
+        '6': '6: 推測航法'
+      };
+      return map[q] || (q ? `コード: ${q}` : '-');
+    }
+
+    // 緯度・経度(度) -> 平面直角座標 第3系 (X, Y) [GRS80]
+    function latLonToZone3(latDeg, lonDeg) {
+      const phi = latDeg * Math.PI / 180.0;
+      const lambda = lonDeg * Math.PI / 180.0;
+      const phi0 = 36.0 * Math.PI / 180.0;
+      const lambda0 = (132.0 + 10.0 / 60.0) * Math.PI / 180.0;
+      const m0 = 0.9999;
+      const a = 6378137.0;
+      const f = 1.0 / 298.257222101;
+      const n = f / (2.0 - f);
+
+      const A0 = 1.0 + (n * n) / 4.0 + Math.pow(n, 4) / 64.0;
+      const A1 = -1.5 * n + (9.0 / 16.0) * Math.pow(n, 3) - (3.0 / 32.0) * Math.pow(n, 4);
+      const A2 = (15.0 / 16.0) * (n * n) - (15.0 / 32.0) * Math.pow(n, 4);
+      const A3 = -(35.0 / 48.0) * Math.pow(n, 3) + (105.0 / 256.0) * Math.pow(n, 4);
+      const A4 = (315.0 / 512.0) * Math.pow(n, 4);
+
+      const S_phi0 = (a / (1.0 + n)) * (
+        A0 * phi0 + A1 * Math.sin(2 * phi0) + A2 * Math.sin(4 * phi0) + A3 * Math.sin(6 * phi0) + A4 * Math.sin(8 * phi0)
+      );
+
+      const t = Math.sinh(
+        Math.atanh(Math.sin(phi)) - ((2 * Math.sqrt(n)) / (1 + n)) * Math.atanh(((2 * Math.sqrt(n)) / (1 + n)) * Math.sin(phi))
+      );
+      const xi_p = Math.atan(t / Math.cos(lambda - lambda0));
+      const eta_p = Math.atanh(Math.sin(lambda - lambda0) / Math.sqrt(1 + t * t));
+
+      const alpha1 = 0.5 * n - (2.0 / 3.0) * (n * n) + (5.0 / 16.0) * Math.pow(n, 3);
+      const alpha2 = (13.0 / 48.0) * (n * n) - (3.0 / 5.0) * Math.pow(n, 3);
+      const alpha3 = (61.0 / 240.0) * Math.pow(n, 3);
+      const A_bar = (a / (1.0 + n)) * A0;
+
+      let sumX = xi_p;
+      let sumY = eta_p;
+      for (let j = 1; j <= 3; j++) {
+        const aj = j === 1 ? alpha1 : (j === 2 ? alpha2 : alpha3);
+        sumX += aj * Math.sin(2 * j * xi_p) * Math.cosh(2 * j * eta_p);
+        sumY += aj * Math.cos(2 * j * xi_p) * Math.sinh(2 * j * eta_p);
+      }
+
+      return {
+        x: m0 * A_bar * sumX - m0 * S_phi0,
+        y: m0 * A_bar * sumY
+      };
+    }
+
+    function parseNmea() {
+      const errEl = document.getElementById('err-msg');
+      errEl.textContent = '';
+
+      const raw = document.getElementById('nmea-input').value.trim();
+      const line = raw.split(/\r?\n/).find(l => l.includes('GGA'));
+      if (!line) {
+        errEl.textContent = 'GGA行（$GPGGA / $GNGGA）が見つかりません。';
+        return;
+      }
+
+      const parts = line.split('*')[0].split(',');
+      if (parts.length < 10) {
+        errEl.textContent = 'GGAの項目数が不足しています。';
+        return;
+      }
+
+      const lat = nmeaToDeg(parts[2], parts[3]);
+      const lon = nmeaToDeg(parts[4], parts[5]);
+      const fixQ = parts[6];
+      const sats = parts[7];
+      const alt = parseFloat(parts[9]);
+
+      if (isNaN(lat) || isNaN(lon)) {
+        errEl.textContent = '緯度・経度を読み取れませんでした。';
+        return;
+      }
+
+      document.getElementById('out-fix').textContent = fixQualityText(fixQ);
+      document.getElementById('out-sats').textContent = sats ? `衛星数: ${sats}` : '';
+      document.getElementById('out-latlon').textContent = `${lat.toFixed(8)}, ${lon.toFixed(8)}`;
+      document.getElementById('out-alt').textContent = !isNaN(alt) ? `${alt.toFixed(3)} m` : '-';
+
+      const z3 = latLonToZone3(lat, lon);
+      document.getElementById('out-zone3').textContent = `X: ${z3.x.toFixed(3)} / Y: ${z3.y.toFixed(3)}`;
+    }
+
+    function fillDummyGga() {
+      document.getElementById('nmea-input').value =
+        '$GPGGA,012345.00,3403.123456,N,13148.123456,E,4,12,0.8,15.400,M,35.200,M,,*xx';
+      parseNmea();
+    }
+
+    function clearInput() {
+      document.getElementById('nmea-input').value = '';
+      document.getElementById('err-msg').textContent = '';
+      document.getElementById('out-fix').textContent = '-';
+      document.getElementById('out-sats').textContent = '';
+      document.getElementById('out-latlon').textContent = '-';
+      document.getElementById('out-alt').textContent = '-';
+      document.getElementById('out-zone3').textContent = '-';
+    }
+
+    document.getElementById('nmea-input').addEventListener('input', () => {
+      if (document.getElementById('nmea-input').value.includes('GGA')) {
+        parseNmea();
+      }
+    });
+  </script>
+</body>
+</html>
